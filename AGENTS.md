@@ -2,6 +2,8 @@
 
 ## Scope
 
+- Read [docs/architecture-roadmap.md](docs/architecture-roadmap.md) before introducing new API commands. Its P0 identity, completeness, request-budget, and evidence gates apply to Phase 3 and later; implement only what each command needs.
+
 - This repository is a new Go implementation, not a rename or in-place conversion of the existing Bash `fa` repository.
 - Keep the existing Bash repository untouched. Do not copy its customer-specific fixtures, secrets, tokens, cookies, or local configuration.
 - Implement commands only after reviewing Bash behavior, help, and documentation in the existing repository. Never invent CLI flags or API behavior.
