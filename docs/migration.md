@@ -4,7 +4,8 @@
 
 Phase 0 assessment, 30 October 2026, followed by Phase 1 implementation below.
 The assessment sections describe the Bash reference and future migration plan;
-help, version, `customer whoami`, and local `diff` are currently implemented in Go.
+help, version, `customer whoami`, local `diff`, and `ngwaf workspace` are
+currently implemented in Go.
 Unsupported commands continue to fail. No Bash delegation is introduced.
 
 The requested reference `cassiejk/ngwaf-helper` currently redirects through the
@@ -184,7 +185,7 @@ null and false explicitly; use raw JSON only at documented passthrough edges.
 ## First three migration candidates
 
 Ranking is by end-to-end complexity and regression risk, not just function size.
-Help/version already exist and do not count as new migrations. Rank 1 is now implemented in Phase 1 with synthetic transport tests. Rank 2 is implemented in Phase 2 below. Rank 3 remains future work; no
+Help/version already exist and do not count as new migrations. Rank 1 is now implemented in Phase 1 with synthetic transport tests. Rank 2 is implemented in Phase 2 below. Rank 3 is implemented in Phase 3 below; no
 authenticated Fastly validation has occurred.
 
 | Rank | Command | Complexity / risk and prerequisites | Acceptance criteria / request budget |
@@ -333,8 +334,8 @@ tests and the task's explicitly required checks, reporting coverage limits.
 
 Implemented syntax: `sift customer whoami`, with no operands or flags. JSON is
 always emitted on stdout; no `--json` option or flat `whoami` alias is provided.
-Help and version remain available. `diff` was subsequently implemented in Phase 2 below; other migration candidates
-remain unimplemented. README and CLI help describe only the implemented surface.
+Help and version remain available. `diff` was subsequently implemented in Phase 2 below; `ngwaf workspace` is implemented in Phase 3 below; other candidates remain
+unimplemented. README and CLI help describe only the implemented surface.
 
 Source contract checked against Bash `lib/account.sh:cmd_whoami`,
 `lib/dispatch.sh:dispatch_preflight/dispatch_flat/dispatch_customer_namespace`,
@@ -523,14 +524,226 @@ fail the test if the local branch attempts credentials or HTTP. No Bash behavior
 suite or authenticated Fastly request is required or performed.
 
 Phase 2 has been reviewed for the separately authorized commit and normal push
-to main. Snapshot collection and the rest
-of the customer/NGWAF command families remain unavailable. Next work is the
-separately scoped workspace/customer validation foundation from Phase 3; local
+to main. Snapshot collection remains unavailable. The workspace/customer validation
+foundation is implemented in Phase 3 below; other customer/NGWAF commands remain
+unavailable. Local
 snapshots are not proof of current deployment or enforcement. Inputs are decoded
 in memory; this phase does not add streaming diff, file-size limits or cross-version
 conversion. No full Go suite, broad vet run or security scan is an acceptance gate.
 
 
+## Phase 3 implementation — NGWAF workspace inspection
+
+Implemented syntax: `sift ngwaf workspace <workspace>`, one exact ID or exact
+ASCII case-insensitive name, no flags. JSON is the sole output mode, as in Bash;
+`--json`, flat `workspace`, collection commands, customer setup/use and other
+NGWAF routes are not implemented. `sift help` documents the available syntax.
+Phase 3 has been reviewed for the separately authorized commit and normal push to main.
+
+### Reference findings and discrepancies
+
+Reviewed current Bash `lib/core.sh` (`current_cid`, `load_customer_context`,
+`get_all_pages`, `resolve_workspace_json`), `lib/ngwaf.sh:cmd_workspace`, dispatch,
+help, CLI reference and `tests/ngwaf-workspace.sh`. The latter stubs resolution
+and verifies projection, including UID missing/empty cases; it does not test
+full pagination or detail ownership. No Bash files or customer fixtures changed.
+
+Source agrees with help on normal syntax and JSON output. Broader documented
+ownership/completeness guarantees need qualification:
+
+- Customer preflight checks exact returned customer ID and a name. Workspace
+  selection uses customer_id-filtered inventory (not a global name lookup), but
+  `cmd_workspace` trusts the detail body without comparing its returned ID or
+  owner. A detail mismatch is not already rejected by that Bash command.
+- The Bash paginator requires data arrays but can infer completion from a short
+  page without an initial usable total, warns and uses a changed total, and can
+  stop at fetched >= total. It does not reject duplicate IDs across pages as an
+  inventory-wide invariant. Those behaviors are weaker than an unqualified
+  claim of stable, exact, complete inventory.
+- Name resolution uses jq `ascii_downcase`, not general Unicode case folding.
+  Exact ID has priority over a colliding name, and partial names are rejected.
+- Bash preflight can run before workspace operand-count validation. Go checks
+  syntax first; invalid usage must not trigger a customer lookup.
+
+### Selection and scope evidence
+
+`internal/config.CustomerSelection` follows existing Bash precedence: nonempty
+FASTLY_CUSTOMER_ID first, then the saved customer_id file in
+`$XDG_CONFIG_HOME/fastly-ngwaf`, or `$HOME/.config/fastly-ngwaf` if XDG_CONFIG_HOME
+is empty. Trailing newline removal matches Bash command substitution; spaces
+are not silently trimmed. Missing/unreadable/empty selection fails. No new sift
+config path, automatic migration, local write, credential file, alternate token
+source or customer-discovery request is introduced. Tests inject the file reader
+and environment; they do not read the developer's selection or credentials.
+
+After syntax/selection validation, the public client authenticates using
+FASTLY_API_TOKEN and Fastly-Key. The selected customer GET must return the exact
+ID and a nonempty string name. The complete workspace inventory must contain
+one exact ID match, or exactly one ASCII case-insensitive exact name match.
+Every row requires a nonempty string ID/name; duplicate IDs anywhere fail,
+even when the requested ID was found early. The detail must return that exact
+workspace ID; a supplied detail name must exactly agree with inventory.
+
+Ownership evidence is the verified customer plus membership in the public
+customer_id-filtered inventory and the exact detail request/returned ID. On list
+envelopes, list rows and detail, any explicit customer_id must be a nonempty
+string equal to the selected customer; null/empty/malformed/conflicting explicit
+ownership fails. Absent owner fields are allowed because the scoped inventory
+is the established API ownership path; absence is not a claimed independent
+owner attestation. If that API filtering contract is not trustworthy for a
+particular deployment, this command's evidence is insufficient and no name-based
+or internal-API fallback is authorized. No product/service/Agents discovery runs.
+
+### Endpoints, pagination and bounds
+
+One success makes `1 + P + 1` logical GET requests, normally three:
+
+1. `/customer/{selected_customer_id}` (no global customer discovery).
+2. `/ngwaf/v1/workspaces` with customer_id, limit=100 and page=1..P, even for an
+   exact workspace ID. Resolve only after complete collection retrieval.
+3. `/ngwaf/v1/workspaces/{resolved_id}` with customer_id.
+
+Customer/workspace path segments and query values are encoded. Invalid empty,
+control-character and traversal-like single-segment IDs fail locally. Public
+host is fixed to api.fastly.com; no redirects or application retries are used.
+A 120-second command deadline bounds the whole inspection; each request inherits
+that context and a maximum 60-second deadline. Pagination stops after at most
+1,000 pages (100,000 rows); success cannot exceed 1,002 HTTP client attempts.
+Standard transport connection recovery is not counted as a new logical request.
+Every response retains the existing 1 MiB bound. Cancellation and any failure
+stop subsequent calls, and no report is emitted until all required evidence is
+validated. An injected HTTP client's shorter timeout is preserved.
+
+Go requires a stable numeric nonnegative integer meta.total on every page,
+an explicit non-null data array, at most 100 rows per page, no duplicate IDs,
+and cumulative unique rows exactly equal to total before completion. Missing
+metadata, changed totals, excess rows, repeated pages, or empty/short pages
+before total fail closed. Zero total is accepted only with an explicit empty
+array and ultimately yields workspace-not-found, never an empty successful
+inspection. Pagination completeness is a validated traversal against advertised
+metadata, not a guarantee against concurrent changes or credential-limited API
+visibility. No API can be certified complete beyond its returned contract.
+
+### Output and intentional differences
+
+JSON preserves the Bash keys: workspace, workspace_id, workspace_uid,
+workspace_input, mode, immediate_blocking, default_blocking_response_code,
+provenance. Name and ID come from the uniquely selected inventory row; UID and
+configuration come from detail. Missing/null UID stays null, empty UID stays
+empty; non-string non-null UID fails. UID is never substituted for workspace ID.
+Missing configuration values project to null rather than empty objects or zero;
+returned false/zero values are retained. Non-null attack_signal_thresholds must
+be an object. Provenance retains endpoint
+`GET /ngwaf/v1/workspaces/{workspace_id}`, data_class `configuration_snapshot`,
+and customer_scoped true only after successful validation. The P0 reconciliation
+below adds the customer/inventory sources used to establish those claims. No deployment,
+architecture, traffic, enforcement or efficacy inference is added.
+
+Intentional Go/Bash differences:
+
+- Stable totals, duplicate-key/ID rejection, exact detail identity, explicit
+  owner-conflict checks and consistent names strengthen the reference's safety.
+  Duplicate JSON keys in the new customer/list/detail paths are rejected; this
+  stricter decoder does not change the existing whoami field projection.
+- Workspace UID is typed as string/null, not arbitrary jq data. False immediate
+  threshold values are retained rather than Bash's `// null` fallback. Known
+  missing optional projected keys remain null for compatibility.
+- Syntax errors return 2 before environment/API access; Bash normally returns 1
+  and can perform preflight first. Selection, HTTP, validation, incomplete
+  pagination, cancellation/timeout and output errors return 1; success is 0.
+- Scope summary on stderr states successful validation and selection source,
+  without echoing customer/workspace identifiers or names. No Bash color,
+  spinner/debug mode, raw error-body preview or curl retry setting is ported.
+  Generic non-auth HTTP errors now report status without resource paths.
+- Both implementations emit JSON for this command. No separate human renderer
+  or new formatting flag is invented.
+
+### Validation and remaining work
+
+Focused tests use synthetic transports and injected selection sources to cover
+customer precedence/file fallback, exact ID/name and ID-over-name priority,
+one/two-page success, missing UID/null/empty fidelity, zero threshold values,
+customer/detail/owner conflicts, duplicate IDs/repeated pages, ambiguous and
+partial names, missing arrays/totals, changed totals, incomplete pagination,
+401/403 and malformed detail. Requests are asserted by endpoint and count;
+invalid CLI arguments are checked before environment access. Shared client
+changes are also exercised by the existing whoami/cancellation/redaction tests
+in the affected CLI package. No authenticated Fastly calls, Bash behavior suite,
+full regression suite, broad vet or security scan ran.
+
+Phase 3 inspects one workspace after the necessary selected-customer inventory;
+it does not minimize inventory calls by bypassing resolution for an exact ID.
+All selection reads are read-only. No setup/use command, workspace listing CLI,
+rules, snapshots, deployment mapping or additional authentication domain is
+implemented. Remaining work is review of this deliberately stricter compatibility
+contract and separately authorized follow-on commands. Mock validation does not
+establish live API access or universal UID availability; this task makes no
+live operational claim.
+
+
+### Phase 3 P0 architecture reconciliation
+
+The initial reconciliation used a stale local checkout missing the architecture
+roadmap. Fetching origin/main recovered the original
+[architecture roadmap](architecture-roadmap.md), including all P0/P1/P2
+requirements. Those requirements are preserved, with verified Phase 3 evidence
+added as an implementation-status section. The remote engineering-guidance link
+and lightweight validation policy are preserved. Existing Phase 3 source and
+tests were restored byte-for-byte; no executable reconciliation was necessary.
+
+Identity resolution, customer validation, UID separation and pagination rejection
+already satisfied P0-A/B and were not rewritten. The confirmed output gap was
+provenance: a detail endpoint alone did not describe the customer verification
+and complete inventory used for scope. The original endpoint/data_class/
+customer_scoped keys remain; these additive objects now report actual evidence:
+
+- `customer_identity`: selected_id, api_confirmed_id, selection_source and the
+  customer verification endpoint. CLI selection is environment/selected_file;
+  direct inspection callers default to caller. Input selection and API-confirmed
+  identity remain explicitly separate even though success requires equal IDs.
+- `workspace_identity`: resolved_by (id/name), customer_inventory_membership,
+  detail_id_verified, ownership_basis and detail_customer_id_present. Missing
+  explicit owner fields rely on the validated scoped inventory, not names.
+- `inventory`: endpoint, customer_id filter, pages_fetched, rows_fetched,
+  reported_total and completeness=`complete_against_reported_total`. This reports
+  completed traversal consistency, not a complete account or atomic inventory.
+- `requests`: logical_requests=P+2 and max_logical_requests=1002. The existing
+  page loop and fixed customer/detail call sites enforce this upper bound;
+  no generic request-budget framework was needed.
+
+For P0-C, worst-case successful or detail-failed execution is 1+1000+1=1002
+logical HTTP client invocations. Incomplete traversal at the page cap makes at
+most 1001 and skips detail. Earlier failure or cancellation stops subsequent
+calls. The 120-second inspection/60-second request deadlines remain unchanged;
+local selection-file reads occur before that inspection deadline. A final
+context check now rejects success if cancellation arrives during final detail
+retrieval. The standard/injected HTTP transport must honor request context.
+
+Potentially lengthy pagination warrants progress. The CLI emits a sanitized
+start message and accepted page/row counts on stderr for the first page, every
+tenth page and completion. Ownership is confirmed only after detail validation.
+There is no timer/spinner infrastructure or idle heartbeat while one request
+waits; its existing deadline bounds the wait. stdout stays a single JSON result.
+This is an intentional additional stderr/provenance difference from Bash and
+the earlier Phase 3 draft, without changing configuration projection.
+
+P0-D review confirms no deployment, attachment, observed-traffic or enforcement
+fields/claims are emitted. Configuration snapshot evidence remains distinct from
+API identity and scoped inventory membership. Credential-limited visibility,
+concurrent inventory changes and reliance on the API's customer filter remain
+explicit limits; no authenticated live verification occurred.
+
+Focused changed-behavior validation:
+`go test ./internal/ngwaf ./internal/cli -run 'TestWorkspaceP0Evidence|TestWorkspaceCLI'`
+passed. It covers serialized provenance, exact count reporting, selection source,
+page progress and final-response cancellation. Earlier passing config, resolver,
+pagination rejection and shared HTTP tests are reused for unchanged behavior;
+no broad tests, vet or scans ran. The maximum-page bound was verified from the
+loop and fixed call sites rather than a large generated test matrix.
+`git diff --check` passed. Phase 3 and reconciled documentation are reviewed for
+the separately authorized commit and normal push; no tag or release is planned.
+
+
 ## Architecture checkpoint before Phase 3
 
-See [architecture-roadmap.md](architecture-roadmap.md) for the P0 implementation gates: verified resource identity, explicit retrieval completeness, bounded API cost, and evidence/provenance boundaries. Implement these incrementally for `ngwaf workspace`, rather than building generic frameworks. The roadmap documents future work only; it does not mean Phase 3 has started.
+See [architecture-roadmap.md](architecture-roadmap.md) for the P0 implementation gates: verified resource identity, explicit retrieval completeness, bounded API cost, and evidence/provenance boundaries. Implement these incrementally for `ngwaf workspace`, rather than building generic frameworks. This checkpoint originated as a design gate. Phase 3 implementation and verified status are now recorded above and in the roadmap; later planned capabilities remain unimplemented.

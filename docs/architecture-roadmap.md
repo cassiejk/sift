@@ -1,10 +1,10 @@
 # Sift architecture and improvement roadmap
 
-Status: design decisions and gates, not implemented functionality. This complements [migration.md](migration.md), which records Bash command contracts and actual Go implementation status. The Bash repository remains unchanged.
+Status: design requirements plus verified Phase 3 implementation status below; planned capabilities are not implemented merely by appearing here. This complements [migration.md](migration.md), which records Bash command contracts and actual Go implementation status. The Bash repository remains unchanged.
 
 ## Purpose
 
-Build a maintainable, read-only Go CLI, not a Bash line-for-line port. Preserve externally useful command semantics, documented evidence boundaries, and important failure behavior. Simplify aliases, hidden state, broad fan-out, and duplicated implementation where defensible. Current Go support is help/version, `customer whoami`, and local `diff`; do not describe planned commands as available.
+Build a maintainable, read-only Go CLI, not a Bash line-for-line port. Preserve externally useful command semantics, documented evidence boundaries, and important failure behavior. Simplify aliases, hidden state, broad fan-out, and duplicated implementation where defensible. Current Go support is help/version, `customer whoami`, local `diff`, and `ngwaf workspace`; do not describe planned commands as available.
 
 ## Non-negotiable distinctions
 
@@ -98,3 +98,129 @@ These are acceptance gates for `sift ngwaf workspace <workspace>`, **not** a req
 ## Deliberate exclusions
 
 Do not create generic frameworks or exhaustive tests solely to satisfy this roadmap. Do not copy production credentials, customer-specific extensions, or customer data. Do not change the Bash repository. Roadmap status is not evidence of live API behavior.
+
+
+## Phase 3 verified implementation status
+
+The remote architecture roadmap is the primary design reference. Its original
+P0/P1/P2 requirements remain intact above. The following implementation evidence
+was reconciled from the local Phase 3 review; the earlier missing-roadmap claim
+applied only to the stale local checkout, not to the remote repository. No
+executable changes were needed during this reconciliation.
+
+Customer selection now explicitly follows Bash precedence: nonempty
+FASTLY_CUSTOMER_ID, then read-only access to the existing Bash selection file
+under XDG_CONFIG_HOME or HOME/.config. No Go-owned selection file or automatic
+credential/config migration is introduced. This command-level compatibility
+choice is documented rather than silently resolving the broader future config
+design. Direct detail-only ownership remains unverified; full scoped inventory
+is retained. Other open decisions and P1/P2 capabilities remain deferred.
+
+Checkpoints 3A–3C are implemented and reviewed for the authorized Phase 3 commit
+and normal push. Scope and pagination tests passed offline; no live API
+acceptance is claimed. Completeness is against reported totals only.
+
+### P0-A — Identity and scope
+
+**Verified:** selection is read by `internal/config/customer.go` and validated
+separately in `internal/ngwaf/workspace.go`. A selected customer ID is not trusted
+until GET `/customer/{customer_id}` returns that exact ID and a nonempty name.
+Complete customer-filtered inventory membership precedes workspace resolution;
+exact ID wins over an ASCII case-insensitive exact name. Partial/ambiguous names
+and duplicate IDs fail. Detail must return the resolved ID; explicit owner
+metadata and supplied names cannot conflict. Workspace ID and detail UID remain
+separate fields; missing/null UID is not fabricated.
+
+**Gap fixed:** JSON now distinguishes `provenance.customer_identity.selected_id`
+from `api_confirmed_id`, records the customer verification endpoint, and records
+selection_source (`environment` or `selected_file` in CLI output; `caller` when
+the inspection function is used without the CLI selection layer).
+`workspace_identity` records resolution method, inventory membership, verified
+detail ID, ownership basis and presence of explicit detail customer_id.
+
+**Limit:** when an owner field is absent, ownership relies on the public
+customer_id-filtered inventory contract, not an independent owner field. Scope
+verification is not an assertion of universal token visibility or account-wide
+completeness. A successful report contains confirmed identity only; failures
+emit no partial verified report.
+
+### P0-B — Completeness
+
+**Verified, rejection logic unchanged:** limit=100, maximum 1,000 pages;
+required data arrays and stable nonnegative integer meta.total; valid row
+identities; no duplicate IDs; no excess rows; no short/empty page before total.
+Malformed/duplicate JSON keys, inconsistent totals and repeated rows fail.
+No selector is resolved from a partial prefix, even if already encountered.
+
+**Gap fixed:** output now records inventory endpoint and customer filter,
+pages_fetched, rows_fetched, reported_total, and the deliberately qualified
+`complete_against_reported_total` status. These values are recorded from the
+actual accepted traversal, not inferred from the selected detail response.
+
+**Limit:** this proves retrieval consistency against advertised metadata, not
+atomic consistency during concurrent edits or visibility beyond the token.
+No successful report exists for failed/incomplete pagination. The existing
+pagination rejection tests are reused; no new paginator was introduced.
+
+### P0-C — Request costs, cancellation and progress
+
+**Verified:** one customer GET, P workspace-list GETs, one detail GET. Success
+cost is exactly `P + 2` logical HTTP client invocations (normally three), maximum
+`1000 + 2 = 1002`. Detail failure can also consume the maximum. Page-cap failure
+without completion costs at most `1 + 1000 = 1001` and never requests detail.
+Earlier failure/cancellation reduces requests. The for-loop enforces the page
+cap, and single fixed customer/detail call sites enforce the two additional
+calls; the budget is not merely a documentation promise. No application retries,
+redirects or other API branches run. Standard transport connection recovery is
+not a separately counted logical request.
+
+The inspection uses a 120-second context deadline; each HTTP request uses that
+context and at most 60 seconds, with earlier caller/client deadlines preserved.
+The public client checks context before each request, and the executable
+propagates SIGINT/SIGTERM. Configuration selection occurs before the inspection
+context and is a local file read; the deadline is not a filesystem watchdog.
+An injected transport must honor context cancellation, as required by Go HTTP.
+
+**Gaps fixed:** requests provenance reports actual successful logical count and
+max_logical_requests=1002; a final context check prevents a verified report when
+cancellation arrives during the final detail response. A lightweight stderr
+start message and page milestones (first, every tenth, completion) provide
+progress for potentially long pagination without a goroutine/ticker framework.
+Progress reports accepted retrieval, never ownership confirmation before detail
+validation. There is no idle heartbeat during a single blocked HTTP request;
+its deadline bounds that wait.
+
+### P0-D — Evidence and provenance
+
+**Gap fixed:** provenance originally listed only the detail endpoint, data_class
+and customer_scoped flag despite relying on three sources. It now additionally
+reports customer_identity, workspace_identity, inventory and requests evidence
+above. Existing top-level configuration fields and original provenance keys
+remain; these are additive intentional differences from Bash output.
+
+All endpoints are public api.fastly.com GETs in the fixed-host client. Report
+source paths use endpoint templates plus validated identity fields; credentials,
+headers and raw response bodies are not recorded. Configuration values still
+come from detail, while workspace name/ID come from scoped inventory. Identity
+selection source is local input, not an authenticated API observation.
+
+**Verified:** data_class remains `configuration_snapshot`. No deployment,
+product attachment, observed traffic, architecture classification, enforcement
+or efficacy claim is emitted. UID is not a deployment classification or a
+substitute for workspace ID. Absence of optional fields remains unknown/null.
+
+### Validation and remaining work
+
+New/revised focused tests only:
+`go test ./internal/ngwaf ./internal/cli -run 'TestWorkspaceP0Evidence|TestWorkspaceCLI'`.
+Both packages passed. Tests inspect serialized provenance, actual counts, progress,
+selection source, and cancellation during detail. Existing passing selection,
+resolution, pagination and HTTP tests are reused for unchanged behavior. The
+page-cap proof is static against the bounded loop and fixed call sites, not an
+exhaustive 100,000-row test. `git diff --check` passes.
+
+No full suite, broad vet, security scan, authenticated Fastly call or Bash test
+run. No changes to Bash, tags or releases. Phase 3 publication is now separately authorized. Remaining limitations
+are the scoped API ownership contract, token visibility, concurrent inventory
+changes, no idle heartbeat and lack of live acceptance; none is silently upgraded
+to deployment or completeness evidence. The original P0/P1/P2 requirements above are retained from origin/main.
