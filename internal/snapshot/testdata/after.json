@@ -1,0 +1,20 @@
+{
+  "snapshot_schema_version": "1.0",
+  "tool_version": "synthetic-after",
+  "captured_at": "2026-01-02T00:00:00Z",
+  "customer": {"id": "customer-test", "name": "Synthetic customer"},
+  "workspace": {"id": "workspace-test", "name": "Synthetic workspace"},
+  "safety": {"list_entries_included": false},
+  "configuration": {
+    "workspace": {"mode": "block", "large": 9007199254740993, "optional": null},
+    "rules": {
+      "workspace": [
+        {"id": "rule-added", "enabled": true},
+        {"id": "rule-a", "enabled": false, "description": "Synthetic rule"}
+      ],
+      "account_applying": [{"reference_id": "account-rule", "enabled": true}]
+    },
+    "thresholds": [{"name": "threshold-test", "value": 1.0}],
+    "lists": {"workspace": [], "account": []}
+  }
+}

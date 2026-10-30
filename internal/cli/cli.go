@@ -22,6 +22,9 @@ func RunContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string, httpClient *http.Client) int {
+	if len(args) > 0 && args[0] == "diff" {
+		return runDiff(args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "customer" {
 		if len(args) != 2 || args[1] != "whoami" {
 			fmt.Fprintln(stderr, "sift: usage: sift customer whoami (no arguments or options)")
@@ -41,7 +44,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 		return 0
 	}
 	if len(args) == 0 {
-		fmt.Fprintln(stdout, "sift — Fastly security inspection (Go rewrite, early scaffold)\nUsage: sift [help|version]\n       sift customer whoami")
+		fmt.Fprintln(stdout, "sift — Fastly security inspection (Go rewrite, early scaffold)\nUsage: sift [help|version]\n       sift customer whoami\n       sift diff <before.json> <after.json> [--json] [--check]")
 		return 0
 	}
 	if len(args) != 1 {
@@ -50,7 +53,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 	}
 	switch args[0] {
 	case "help", "-h", "--help":
-		fmt.Fprintln(stdout, "sift — Fastly security inspection (Go rewrite, early scaffold)\nUsage: sift [help|version]\n       sift customer whoami")
+		fmt.Fprintln(stdout, "sift — Fastly security inspection (Go rewrite, early scaffold)\nUsage: sift [help|version]\n       sift customer whoami\n       sift diff <before.json> <after.json> [--json] [--check]")
 		return 0
 	case "version":
 		fmt.Fprintln(stdout, "sift dev (unreleased)")

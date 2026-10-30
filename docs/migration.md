@@ -4,7 +4,7 @@
 
 Phase 0 assessment, 30 October 2026, followed by Phase 1 implementation below.
 The assessment sections describe the Bash reference and future migration plan;
-only help, version and `customer whoami` are currently implemented in Go.
+help, version, `customer whoami`, and local `diff` are currently implemented in Go.
 Unsupported commands continue to fail. No Bash delegation is introduced.
 
 The requested reference `cassiejk/ngwaf-helper` currently redirects through the
@@ -184,8 +184,8 @@ null and false explicitly; use raw JSON only at documented passthrough edges.
 ## First three migration candidates
 
 Ranking is by end-to-end complexity and regression risk, not just function size.
-Help/version already exist and do not count as new migrations. Rank 1 is now implemented in Phase 1 with synthetic transport tests. Ranks 2
-and 3 remain future work; no authenticated Fastly validation has occurred.
+Help/version already exist and do not count as new migrations. Rank 1 is now implemented in Phase 1 with synthetic transport tests. Rank 2 is implemented in Phase 2 below. Rank 3 remains future work; no
+authenticated Fastly validation has occurred.
 
 | Rank | Command | Complexity / risk and prerequisites | Acceptance criteria / request budget |
 | --- | --- | --- | --- |
@@ -333,8 +333,8 @@ tests and the task's explicitly required checks, reporting coverage limits.
 
 Implemented syntax: `sift customer whoami`, with no operands or flags. JSON is
 always emitted on stdout; no `--json` option or flat `whoami` alias is provided.
-Help and version remain available. All other migration candidates remain
-unimplemented. README and CLI help describe only the implemented surface.
+Help and version remain available. `diff` was subsequently implemented in Phase 2 below; other migration candidates
+remain unimplemented. README and CLI help describe only the implemented surface.
 
 Source contract checked against Bash `lib/account.sh:cmd_whoami`,
 `lib/dispatch.sh:dispatch_preflight/dispatch_flat/dispatch_customer_namespace`,
@@ -412,5 +412,120 @@ Phase 1 source and documented compatibility differences have been reviewed for
 publication. Phase 2 remains the independent local
 snapshot `diff` command: establish its schema/identity and `--check` contracts
 with small synthetic files, without adding network or snapshot-collection
-functionality. No Phase 2 implementation is included here, and no live Fastly
-validation is required as a prerequisite for offline development.
+functionality. The Phase 2 implementation is recorded below. No live Fastly validation is
+required as a prerequisite for offline development.
+
+
+## Phase 2 implementation — local snapshot diff
+
+Implemented syntax matches the normal Bash invocation:
+
+```text
+sift diff <before.json> <after.json> [--json] [--check]
+```
+
+The two files come first. Either flag order and repeated recognized flags are
+accepted as in Bash. Other trailing operands/options are rejected before files
+are opened. Default output is human-readable; `--json` emits a single report.
+No `--output`, stdin, collection, discovery or pagination functionality is added.
+The diff branch does not call the environment reader or public API client;
+request count is zero, including failure cases. Inputs are read, never rewritten.
+
+### Source contract and snapshot format
+
+Reviewed Bash `lib/snapshots.sh` (`snapshot_validate_file`, `snapshot_diff_json`,
+`snapshot_render_diff_human`, `cmd_diff`), `lib/dispatch.sh` preflight,
+`lib/help.sh`, README, CLI reference and `tests/snapshots.sh`. Current source is
+authoritative. Tests use newly written small synthetic files modeled on those
+scenarios; no customer exports or Bash implementation files are copied.
+
+Only the string snapshot schema version `"1.0"` is supported. Root customer and
+workspace objects require nonempty string `id` values. Their IDs must match
+across files; this is local scope consistency, not authenticated ownership.
+`configuration` contains workspace settings plus these required arrays:
+
+- `rules.workspace`
+- `rules.account_applying`
+- `thresholds`
+- `lists.workspace`
+- `lists.account`
+
+Each array element is an object with a unique stable identity within its own
+array. Precedence is `id`, `reference_id`, `name`, `description`; null/false
+values fall through as with jq `//`. The chosen value must be a nonempty string:
+an empty or numeric first candidate is invalid rather than falling through.
+Duplicate identities, missing arrays, null in place of an array, malformed JSON,
+unreadable files and unsupported versions fail without emitting a report.
+Capture time, tool version and names are descriptive metadata, not required
+identity. Missing capture fields are projected as null. Original customer and
+workspace metadata in the report come from the before snapshot.
+
+### Comparison and output
+
+Collections are indexed by identity. Added, removed and modified arrays are
+sorted by identity; changed field names are sorted. Empty deltas remain JSON
+arrays, not null. Object key order and collection entry order do not affect
+comparison; nested arrays retain order and are compared as values. Nothing is
+trimmed, case-folded or normalized out of configuration. Numeric comparison is
+exact (no float64 conversion): equivalent decimal spellings compare equal,
+while original JSON numbers, booleans, strings, missing keys and nulls remain
+intact in output. In particular, integers above 2^53 are not rounded.
+
+JSON follows the Bash envelope: `command`, `snapshot_schema_version`, `customer`,
+`workspace`, `before`, `after`, `list_entries`, `changes`, `provenance`, `changed`.
+`changes.workspace` contains changed/changed_fields/before/after; each of the five
+collection deltas has added/removed/modified/counts. Modified entries include
+id/changed_fields/before/after; added and removed entries include id/value.
+`provenance.data_class` is `local_snapshot_comparison`, `API_requests_made` is
+false, and scope_validation states that customer and workspace IDs must match.
+Capture metadata alone does not set `changed`. No list members are reconstructed
+from redacted snapshots; metadata and reported counts are still compared. The
+human report retains the Bash heading, status labels, collection counts,
+modified-workspace-rule table and redaction note.
+
+### Exit contract and intentional differences
+
+Valid comparisons return 0, including differences unless `--check` is present.
+With `--check`, configuration differences return 1 **after** emitting the full
+human or JSON report; unchanged comparisons return 0. Input/scope/read/write
+errors return 1 on stderr. Unsupported syntax returns 2 (the existing Go usage
+convention), rather than Bash's 1. Use `sift help` for usage; no additional diff
+help flag has been invented.
+
+Safety/precision differences from Bash are explicit:
+
+- Go accepts exactly one JSON object per input and rejects duplicate keys.
+  Bash's jq validation can process a stream, while its slurped comparison uses
+  only the first snapshot; Go rejects that ambiguity.
+- Go requires `configuration.workspace` to be an object and an optional non-null
+  `safety.list_entries_included` to be boolean. Bash does not validate those
+  shapes up front. Absent/null inclusion flags default to false.
+- Missing-to-null changes remain distinct and are included in `changed_fields`.
+  Bash's object equality detects such changes, but its field accessor treats a
+  missing key like null and can omit that key from `changed_fields`.
+- Human output is plain text with a tab-separated modified-rule table, independent
+  of Bash color controls and optional `column` alignment. JSON key formatting is
+  deterministic but is not promised byte-for-byte identical to jq.
+- Diagnostics identify before/after input and failure category without echoing
+  file contents, supplied paths or raw parser errors. No shell/jq dependency is
+  introduced. Whole reports intentionally contain supplied configuration values;
+  handle them with the same care as their input snapshots.
+
+### Focused validation and remaining limits
+
+The snapshot package tests cover unchanged comparisons, meaningful deltas,
+missing/null preservation, exact large numbers, numeric spelling equivalence,
+collection ordering, deterministic output, human rendering, schema/identity
+failures, malformed/multi-document JSON, duplicate keys and cross-scope rejection.
+CLI tests cover both output modes, report-before-check failure, unchanged check,
+unsupported arguments and missing files; injected environment/transport functions
+fail the test if the local branch attempts credentials or HTTP. No Bash behavior
+suite or authenticated Fastly request is required or performed.
+
+Phase 2 has been reviewed for the separately authorized commit and normal push
+to main. Snapshot collection and the rest
+of the customer/NGWAF command families remain unavailable. Next work is the
+separately scoped workspace/customer validation foundation from Phase 3; local
+snapshots are not proof of current deployment or enforcement. Inputs are decoded
+in memory; this phase does not add streaming diff, file-size limits or cross-version
+conversion. No full Go suite, broad vet run or security scan is an acceptance gate.
