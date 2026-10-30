@@ -24,6 +24,13 @@
 
 ## Validation and Git
 
-- Start with narrowly focused tests on changed packages; avoid broad tests unless justified by the changes.
+- Prioritize fast, incremental development. Documentation-only changes require diff review and `git diff --check`, not behavior tests.
+- For Go changes, run focused tests for changed behavior and immediate dependencies. New commands need tests for the command and its immediate dependencies; HTTP, authentication, and ownership changes need focused checks for the specific behavior changed.
+- Do not automatically run `go test ./...`, `go vet ./...`, or the full suite. Broader validation requires an actual cross-package change or an identified integration risk; merely importing a shared package is insufficient.
+- Do not repeat successful validation for unchanged code, including after documentation/comment edits, commits, or pushes. Git publication does not independently require additional tests.
+- Do not create mandatory broad pre-commit/pre-push hooks or full-suite CI gates without explicit authorization.
+- Use standard `testing` and small synthetic HTTP fixtures. Cover success and important failures, preserving critical authentication, credential-redaction, ownership, and incomplete-result checks where applicable. Do not construct speculative security-test matrices or tests for future functionality, or add security scanning tools without a specific need.
+- Do not make authenticated Fastly requests during automated tests. Inject synthetic transports and isolate tests from ambient credentials.
+- At task completion, concisely report tests actually run and their results, reused validation, intentionally skipped checks, and known risks. Do not run extra tests just to improve the report.
 - Preserve uncommitted changes. Do not push, release, or tag without explicit approval.
 - Record discrepancies between Bash behavior and documentation; current Bash source is authoritative until a Go replacement is explicitly accepted.

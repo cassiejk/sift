@@ -2,10 +2,10 @@
 
 ## Status and evidence boundary
 
-Phase 0 assessment, 30 October 2026. This is a plan, not an implemented command
-surface. `sift` still implements only offline help and version; unsupported
-commands continue to fail. No Fastly client, dependency, compatibility launcher,
-credential loading, or Bash delegation is introduced by this assessment.
+Phase 0 assessment, 30 October 2026, followed by Phase 1 implementation below.
+The assessment sections describe the Bash reference and future migration plan;
+only help, version and `customer whoami` are currently implemented in Go.
+Unsupported commands continue to fail. No Bash delegation is introduced.
 
 The requested reference `cassiejk/ngwaf-helper` currently redirects through the
 GitHub API to `cassiejk/Fastly-Security-Audit`, matching the read-only checkout at
@@ -21,9 +21,10 @@ extension implementation, customer identifiers, local configuration, exports,
 credentials, or raw production responses are copied into this repository.
 
 Read both repositories' `AGENTS.md` before subsequent work. Changes to Bash,
-commits, pushes, tags and releases are outside this phase. Future API work
-requires a separate implementation task; endpoint descriptions below document
-existing Bash behavior, not proposed executable commands.
+tags and releases are outside this phase. Phase 0 documentation publication
+was separately authorized. Phase 1 publication was subsequently authorized.
+Endpoint descriptions in the assessment document existing Bash behavior; the
+Phase 1 status section identifies the implemented Go surface.
 
 ## Existing entry points and command inventory
 
@@ -183,8 +184,8 @@ null and false explicitly; use raw JSON only at documented passthrough edges.
 ## First three migration candidates
 
 Ranking is by end-to-end complexity and regression risk, not just function size.
-Help/version already exist and do not count as new migrations. All API behavior
-below is future work tested with synthetic transports, not Phase 0 work.
+Help/version already exist and do not count as new migrations. Rank 1 is now implemented in Phase 1 with synthetic transport tests. Ranks 2
+and 3 remain future work; no authenticated Fastly validation has occurred.
 
 | Rank | Command | Complexity / risk and prerequisites | Acceptance criteria / request budget |
 | --- | --- | --- | --- |
@@ -326,3 +327,90 @@ tests and the task's explicitly required checks, reporting coverage limits.
   unresolved regardless of a working identity or HTTP success.
 - **Platform scope:** define portable replacements for Bash installation doctor
   and Perl VCL parsing; no extra dependency or whole-shell invocation by default.
+
+
+## Phase 1 implementation — customer whoami
+
+Implemented syntax: `sift customer whoami`, with no operands or flags. JSON is
+always emitted on stdout; no `--json` option or flat `whoami` alias is provided.
+Help and version remain available. All other migration candidates remain
+unimplemented. README and CLI help describe only the implemented surface.
+
+Source contract checked against Bash `lib/account.sh:cmd_whoami`,
+`lib/dispatch.sh:dispatch_preflight/dispatch_flat/dispatch_customer_namespace`,
+`lib/core.sh:get`, help and `tests/namespaces.sh` argument rejection. Existing
+setup/doctor tests mock `/tokens/self`, but there is no dedicated Bash whoami
+success suite. Go adds focused offline command tests rather than claiming that
+Bash's endpoint behavior has been live-validated.
+
+`internal/fastly.Client.Whoami` sends GET to the fixed public URL
+`https://api.fastly.com/tokens/self`, with `Fastly-Key` from `FASTLY_API_TOKEN`
+and `Accept: application/json`. No query, customer lookup, discovery or other
+API client is used. There is one HTTP attempt, or zero for invalid syntax,
+missing credentials or a context already canceled/expired. Redirects are not
+followed and no application retries are made. The production default transport
+may perform its standard connection recovery; the single-attempt budget is at
+the HTTP client invocation level, not a claim about TCP connections.
+
+Output is exactly the three keys `name`, `scope`, `expires_at`. Missing fields
+become null; explicit values preserve their JSON types, following Bash's jq
+projection without inventing required fields or expiry parsing. Extra fields
+are discarded. A top-level JSON object, including an empty object, is accepted.
+No selected-customer or ownership claim is made by token metadata.
+
+Intentional differences from Bash:
+
+- Usage/unsupported arguments return 2, consistent with the Go scaffold;
+  Bash rejects them with 1. Success is 0; credentials, API/transport/decode and
+  output-write failures return 1. Cancellation/timeout returns 1 with a sanitized
+  diagnostic rather than a shell/signal-dependent exit. The executable wires
+  SIGINT/SIGTERM to request context cancellation.
+- Only namespaced syntax is ported; Bash's flat alias and broad `whoami -h`
+  help behavior are not ported. Use `sift help` for the available syntax.
+- A 60-second context deadline bounds the entire operation (or an earlier
+  caller deadline). No Bash `NGWAF_CURL_*` options or retry configuration is read.
+- Redirects are rejected to keep credentials at the intended destination;
+  non-2xx status is an explicit error. Response bodies, arbitrary transport
+  errors, and argument values are never echoed in diagnostics. HTTP 401 and 403
+  distinguish authentication from authorization; other statuses report the code.
+  This is stronger redaction than Bash's non-auth error-body/debug previews.
+- Responses are bounded to 1 MiB and must contain exactly one JSON object.
+  Bash's jq pipeline can accept a stream of objects; Go rejects streams and
+  top-level non-objects before writing stdout. Field types remain unmodified.
+- Help text includes the new command. Unknown-command diagnostics no longer
+  echo supplied values, which could contain credentials. No color/progress,
+  curl/jq dependency, shell invocation or configuration access is added.
+
+Tests inject an in-memory HTTP transport and environment reader, checking exact
+method/URL/headers, one-or-zero calls, output projection, missing fields,
+credentials, 401/403/503, redirect rejection, malformed/multiple JSON values,
+unexpected shape, response-size bound, transport-error redaction, invalid
+arguments before credential access, active cancellation and expired deadlines.
+No test reads real credentials or makes a Fastly request.
+
+Phase 1 command implementation is complete and reviewed for publication. Remaining broader
+architecture decisions (selection, pagination, retries for future commands,
+legacy clients, snapshot diff and workspace inspection) stay deferred. No live
+API acceptance, release or tag has been performed. Phase 1 commit and normal
+push to main were separately authorized.
+
+
+### Review and Phase 2 boundary
+
+The Phase 1 review confirmed that `sift customer whoami` follows the namespaced
+Bash `fa customer whoami` syntax for a normal invocation. The explicitly listed
+alias/help and failure-status differences above remain intentional. This is one
+command, not migration of the customer command family.
+
+The validation policy is now recorded in `AGENTS.md`. This documentation/policy
+update reuses the earlier passing focused package tests for unchanged Go code;
+no new test matrix or infrastructure is required. Future behavior changes need
+only directly relevant tests and immediate dependencies, with broader checks
+justified by an actual integration risk.
+
+Phase 1 source and documented compatibility differences have been reviewed for
+publication. Phase 2 remains the independent local
+snapshot `diff` command: establish its schema/identity and `--check` contracts
+with small synthetic files, without adding network or snapshot-collection
+functionality. No Phase 2 implementation is included here, and no live Fastly
+validation is required as a prerequisite for offline development.

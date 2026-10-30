@@ -2,7 +2,7 @@
 
 `sift` is an early-stage Go rewrite of the read-only `fa` Fastly security inspection CLI.
 
-**Status:** Scaffold only. There are no authenticated API requests, Fastly command implementations, or releases. The existing Bash `fa` project is separate and unchanged.
+**Status:** Help, version, and `sift customer whoami` are implemented. The whoami command reads `FASTLY_API_TOKEN`, makes one public `GET /tokens/self` request, and prints JSON token metadata (`name`, `scope`, `expires_at`). It accepts no flags or operands and requires no selected customer. Tests are offline; no live Fastly validation or release has been performed. The existing Bash `fa` project is separate and unchanged.
 
 ## Local development
 
