@@ -529,3 +529,8 @@ separately scoped workspace/customer validation foundation from Phase 3; local
 snapshots are not proof of current deployment or enforcement. Inputs are decoded
 in memory; this phase does not add streaming diff, file-size limits or cross-version
 conversion. No full Go suite, broad vet run or security scan is an acceptance gate.
+
+
+## Architecture checkpoint before Phase 3
+
+See [architecture-roadmap.md](architecture-roadmap.md) for the P0 implementation gates: verified resource identity, explicit retrieval completeness, bounded API cost, and evidence/provenance boundaries. Implement these incrementally for `ngwaf workspace`, rather than building generic frameworks. The roadmap documents future work only; it does not mean Phase 3 has started.
